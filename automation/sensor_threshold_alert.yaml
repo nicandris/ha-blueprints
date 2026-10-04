@@ -1,0 +1,161 @@
+blueprint:
+  name: Sensor threshold alert
+  description: >-
+    Alerts when any of a set of sensors stays above (or below) its threshold for a
+    while — too cold, too warm, too humid, CO2 too high. One shared threshold with
+    optional per-sensor overrides, each sensor timed independently. Runs your alert
+    action, then optionally speaks it on a speaker inside a time window, with an
+    optional AI-written line. Actions get `sensor`, `value`, `threshold`, `room`
+    (the sensor's area name) and `unit`.
+  domain: automation
+  source_url: https://github.com/nicandris/ha-blueprints/blob/main/automation/sensor_threshold_alert.yaml
+  input:
+    detection:
+      name: Detection
+      input:
+        sensors:
+          name: Sensors
+          selector:
+            entity:
+              domain: sensor
+              multiple: true
+        direction:
+          name: Alert when
+          default: above
+          selector:
+            select:
+              options:
+              - {label: Above the threshold, value: above}
+              - {label: Below the threshold, value: below}
+        threshold:
+          name: Threshold
+          selector:
+            number: {min: -50, max: 5000, step: 0.1, mode: box}
+        overrides:
+          name: Per-sensor thresholds
+          description: 'Optional, e.g. `sensor.bedroom_temperature: 19`.'
+          default: {}
+          selector:
+            object: {}
+        duration:
+          name: For at least
+          default: {hours: 0, minutes: 15, seconds: 0}
+          selector:
+            duration: {}
+        conditions:
+          name: Only if
+          description: Optional extra conditions, e.g. a mode switch being off.
+          default: []
+          selector:
+            condition: {}
+    alerting:
+      name: Alert
+      input:
+        alert:
+          name: Alert action
+          description: E.g. a notify call using `{{ room }}` and `{{ value }}`.
+          default: []
+          selector:
+            action: {}
+    announce:
+      name: Spoken announcement
+      collapsed: true
+      input:
+        tts_entity:
+          name: TTS engine
+          description: Leave empty to skip the announcement.
+          default: ''
+          selector:
+            entity:
+              domain: tts
+        speaker:
+          name: Speaker
+          default: ''
+          selector:
+            entity:
+              domain: media_player
+        announce_after:
+          name: Speak only after
+          default: '10:00:00'
+          selector:
+            time: {}
+        announce_before:
+          name: Speak only before
+          default: '23:59:00'
+          selector:
+            time: {}
+        ai_prompt:
+          name: AI prompt
+          description: >-
+            Optional. Instructions for ai_task.generate_data; templates such as
+            `{{ room }}` and `{{ value }}` work. Empty speaks the fallback directly.
+          default: ''
+          selector:
+            text:
+              multiline: true
+        fallback:
+          name: Fallback message
+          description: Spoken when there is no AI prompt or the AI call fails.
+          default: '{{ room }} is at {{ value }}{{ unit }}.'
+          selector:
+            text: {}
+
+trigger_variables:
+  direction: !input direction
+  threshold: !input threshold
+  overrides: !input overrides
+
+triggers:
+- trigger: numeric_state
+  entity_id: !input sensors
+  # Positive while the sensor is past its own threshold, in either direction.
+  value_template: >-
+    {% if is_number(state.state) %}
+    {% set t = overrides.get(state.entity_id, threshold) | float %}
+    {{ (state.state | float - t) if direction == 'above' else (t - state.state | float) }}
+    {% else %}0{% endif %}
+  above: 0
+  for: !input duration
+
+conditions: !input conditions
+
+actions:
+- variables:
+    sensor: '{{ trigger.entity_id }}'
+    value: '{{ states(sensor) }}'
+    threshold: '{{ overrides.get(sensor, threshold) }}'
+    room: '{{ area_name(sensor) or state_attr(sensor, ''friendly_name'') }}'
+    unit: '{{ state_attr(sensor, ''unit_of_measurement'') or '''' }}'
+    tts_entity: !input tts_entity
+    speaker: !input speaker
+- variables:
+    ai_prompt: !input ai_prompt
+    fallback: !input fallback
+- sequence: !input alert
+- if:
+  - condition: template
+    value_template: '{{ tts_entity != '''' and speaker != '''' }}'
+  - condition: time
+    after: !input announce_after
+    before: !input announce_before
+  then:
+  - if:
+    - condition: template
+      value_template: '{{ ai_prompt != '''' }}'
+    then:
+    - action: ai_task.generate_data
+      data:
+        task_name: Sensor threshold alert
+        instructions: '{{ ai_prompt }}'
+      response_variable: generated
+      continue_on_error: true
+  - action: tts.speak
+    target:
+      entity_id: '{{ tts_entity }}'
+    data:
+      cache: true
+      media_player_entity_id: '{{ speaker }}'
+      message: '{{ generated.data if generated is defined and generated.data else fallback }}'
+
+mode: queued
+max: 10
