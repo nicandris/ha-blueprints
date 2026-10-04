@@ -1,0 +1,261 @@
+blueprint:
+  name: UPS battery test
+  description: >-
+    Cuts mains to a UPS via a smart plug for a few minutes to prove it still carries
+    its load, then restores. Runs on the first chosen weekday of the month, with a
+    heads-up the day before and again before the test. "Run actions" starts a test
+    on demand — that skips the date gate, not the safety checks. Aborts if the UPS
+    never goes on battery (wrong plug) or the battery drops to the floor; restores
+    mains on HA start and if the plug is left off too long. Every outcome lands as a
+    persistent notification and is passed to the optional notify action as
+    `title`, `message` and `important`.
+  domain: automation
+  source_url: https://github.com/nicandris/ha-blueprints/blob/main/automation/ups_battery_test.yaml
+  input:
+    entities:
+      name: Entities
+      input:
+        plug:
+          name: Mains plug
+          description: Smart plug feeding the UPS mains input.
+          selector:
+            entity:
+              domain: switch
+        online:
+          name: UPS online
+          description: Binary sensor that is `on` while the UPS runs on mains.
+          selector:
+            entity:
+              domain: binary_sensor
+        battery:
+          name: UPS battery (%)
+          selector:
+            entity:
+              domain: sensor
+              device_class: battery
+        load:
+          name: UPS load (%)
+          selector:
+            entity:
+              domain: sensor
+        runtime:
+          name: UPS runtime left (min)
+          selector:
+            entity:
+              domain: sensor
+    schedule:
+      name: Schedule
+      input:
+        weekday:
+          name: Weekday
+          description: The test runs on the first of this weekday each month.
+          default: '6'
+          selector:
+            select:
+              options:
+              - {label: Monday, value: '0'}
+              - {label: Tuesday, value: '1'}
+              - {label: Wednesday, value: '2'}
+              - {label: Thursday, value: '3'}
+              - {label: Friday, value: '4'}
+              - {label: Saturday, value: '5'}
+              - {label: Sunday, value: '6'}
+        test_time:
+          name: Test time
+          description: Also the time of the day-before heads-up.
+          default: '13:00:00'
+          selector:
+            time: {}
+        warn_time:
+          name: Warning time
+          description: Same-day reminder before the test.
+          default: '12:30:00'
+          selector:
+            time: {}
+    limits:
+      name: Limits
+      input:
+        test_minutes:
+          name: Test length
+          default: 15
+          selector:
+            number: {min: 1, max: 120, unit_of_measurement: min}
+        min_battery:
+          name: Minimum battery to start
+          default: 80
+          selector:
+            number: {min: 10, max: 100, unit_of_measurement: '%'}
+        abort_battery:
+          name: Abort below battery
+          default: 40
+          selector:
+            number: {min: 5, max: 95, unit_of_measurement: '%'}
+        failsafe_minutes:
+          name: Failsafe
+          description: Turn the plug back on if it has been off this long with no test running.
+          default: 30
+          selector:
+            number: {min: 5, max: 240, unit_of_measurement: min}
+    notify:
+      name: Notify action
+      description: >-
+        Runs for every heads-up and outcome, with variables `title`, `message` and
+        `important` (true for aborts, cut-short tests and the failsafe). E.g.
+        notify.mobile_app_x with `title: "{{ title }}"` and `message: "{{ message }}"`.
+      default: []
+      selector:
+        action: {}
+
+triggers:
+- trigger: time
+  at: !input test_time
+  id: run
+- trigger: time
+  at: !input warn_time
+  id: warn
+- trigger: homeassistant
+  event: start
+  id: failsafe
+- trigger: state
+  entity_id: !input plug
+  to: 'off'
+  for:
+    minutes: !input failsafe_minutes
+  id: stuck
+
+variables:
+  plug: !input plug
+  online: !input online
+  battery: !input battery
+  load: !input load
+  runtime: !input runtime
+  weekday: !input weekday
+  test_time: !input test_time
+  test_minutes: !input test_minutes
+  min_battery: !input min_battery
+  abort_battery: !input abort_battery
+  failsafe_minutes: !input failsafe_minutes
+  nid: "{{ this.entity_id | replace('.', '_') }}"
+
+actions:
+- choose:
+  - conditions:
+    - condition: trigger
+      id: failsafe
+    sequence:
+    - action: switch.turn_on
+      target:
+        entity_id: '{{ plug }}'
+  - conditions:
+    - condition: trigger
+      id: stuck
+    sequence:
+    - action: switch.turn_on
+      target:
+        entity_id: '{{ plug }}'
+    - variables:
+        title: UPS battery test — never finished
+        message: '{{ plug }} had been off for {{ failsafe_minutes }} min with no test
+          running. Mains restored automatically. Check the trace.'
+        important: true
+    - action: persistent_notification.create
+      data: {notification_id: '{{ nid }}', title: '{{ title }}', message: '{{ message }}'}
+    - sequence: !input notify
+  - conditions:
+    - condition: trigger
+      id: run
+    - condition: template
+      value_template: '{% set t = now() + timedelta(days=1) %}{{ t.weekday() == weekday
+        | int and t.day <= 7 }}'
+    sequence:
+    - variables:
+        title: UPS battery test tomorrow
+        message: 'Heads-up: UPS battery test tomorrow at {{ test_time[:5] }}. Mains
+          cut for up to {{ test_minutes }} min. Battery {{ states(battery) }}%, needs
+          {{ min_battery }}% to run.'
+        important: false
+    - sequence: !input notify
+  - conditions:
+    - condition: trigger
+      id: warn
+    - condition: template
+      value_template: '{{ now().weekday() == weekday | int and now().day <= 7 }}'
+    sequence:
+    - variables:
+        title: UPS battery test soon
+        message: 'UPS battery test at {{ test_time[:5] }}. Battery {{ states(battery)
+          }}%, load {{ states(load) }}%.'
+        important: false
+    - sequence: !input notify
+  default:
+  - if:
+    - condition: template
+      value_template: '{{ trigger.id is defined and not (now().weekday() == weekday
+        | int and now().day <= 7) }}'
+    then:
+    - stop: Not the test day
+  - if:
+    - condition: template
+      value_template: '{{ states(battery) | int(0) < min_battery }}'
+    then:
+    - variables:
+        title: UPS battery test — skipped
+        message: 'UPS battery is {{ states(battery) }}%, under {{ min_battery }}%.'
+        important: false
+    - action: persistent_notification.create
+      data: {notification_id: '{{ nid }}', title: '{{ title }}', message: '{{ message }}'}
+    - sequence: !input notify
+    - stop: Battery too low to test
+  - variables:
+      title: UPS battery test — running
+      message: 'Mains cut for up to {{ test_minutes }} min. Battery {{ states(battery)
+        }}%, load {{ states(load) }}%, {{ states(runtime) }} min runtime.'
+      important: false
+      batt_start: '{{ states(battery) | int(0) }}'
+  - action: persistent_notification.create
+    data: {notification_id: '{{ nid }}', title: '{{ title }}', message: '{{ message }}'}
+  - sequence: !input notify
+  - action: switch.turn_off
+    target:
+      entity_id: '{{ plug }}'
+  - wait_template: "{{ is_state(online, 'off') }}"
+    timeout: 60
+  - if:
+    - condition: template
+      value_template: '{{ not wait.completed }}'
+    then:
+    - action: switch.turn_on
+      target:
+        entity_id: '{{ plug }}'
+    - variables:
+        title: UPS battery test — ABORTED
+        message: '{{ plug }} switched off but the UPS never went on battery. Wrong
+          plug? Power restored.'
+        important: true
+    - action: persistent_notification.create
+      data: {notification_id: '{{ nid }}', title: '{{ title }}', message: '{{ message }}'}
+    - sequence: !input notify
+    - stop: Plug does not feed the UPS mains
+  - wait_template: "{{ states(battery) | int(100) < abort_battery or is_state(plug, 'on') }}"
+    timeout: '{{ test_minutes * 60 }}'
+  - variables:
+      stopped: "{{ is_state(plug, 'on') }}"
+  - action: switch.turn_on
+    target:
+      entity_id: '{{ plug }}'
+  - variables:
+      title: >-
+        UPS battery test — {{ 'stopped' if stopped else ('CUT SHORT' if wait.completed
+        else 'passed') }}
+      message: >-
+        Held {{ ((test_minutes * 60 - (wait.remaining | float(0))) / 60) | round(1)
+        }} min on battery, {{ batt_start }}% → {{ states(battery) }}%{{ '' if not
+        wait.completed else (' — stopped by hand' if stopped else ', cut short at the '
+        ~ abort_battery ~ '% floor') }}. Mains restored. Load {{ states(load) }}%, {{
+        states(runtime) }} min runtime.
+      important: '{{ wait.completed and not stopped }}'
+  - action: persistent_notification.create
+    data: {notification_id: '{{ nid }}', title: '{{ title }}', message: '{{ message }}'}
+  - sequence: !input notify
+
+mode: single
