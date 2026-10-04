@@ -6,7 +6,8 @@ blueprint:
     heads-up the day before and again before the test. "Run actions" starts a test
     on demand — that skips the date gate, not the safety checks. Aborts if the UPS
     never goes on battery (wrong plug) or the battery drops to the floor; restores
-    mains on HA start and if the plug is left off too long. Every outcome lands as a
+    mains on HA start, on automation reload (which kills a running test)
+    and if the plug is left off too long. Every outcome lands as a
     persistent notification and is passed to the optional notify action as
     `title`, `message` and `important`.
   domain: automation
@@ -115,6 +116,9 @@ triggers:
   id: warn
 - trigger: homeassistant
   event: start
+  id: failsafe
+- trigger: event
+  event_type: automation_reloaded
   id: failsafe
 - trigger: state
   entity_id: !input plug
