@@ -1,0 +1,186 @@
+blueprint:
+  name: Appliance alert
+  description: >-
+    Alerts while an entity sits in a problem state — dehumidifier bucket full,
+    dishwasher salt low, filter dirty — and clears the alert when it leaves it.
+    Pins a persistent notification, runs your alert action, optionally speaks the
+    message inside a time window, and can have an AI write the line (sanity-checked,
+    with a fallback). Actions get `title`, `message` and `tag`.
+  domain: automation
+  source_url: https://github.com/nicandris/ha-blueprints/blob/main/automation/appliance_alert.yaml
+  input:
+    detection:
+      name: Detection
+      input:
+        entity:
+          name: Entity
+          selector:
+            entity: {}
+        problem_states:
+          name: Problem states
+          description: States that raise the alert, e.g. `on`, or `empty` and `nearly_empty`.
+          selector:
+            select:
+              options: ['on']
+              multiple: true
+              custom_value: true
+        duration:
+          name: For at least
+          default: {hours: 0, minutes: 0, seconds: 30}
+          selector:
+            duration: {}
+    message:
+      name: Message
+      input:
+        tag:
+          name: Notification id
+          description: Used for the persistent notification and passed to actions as `tag`.
+          selector:
+            text: {}
+        title:
+          name: Title
+          selector:
+            text: {}
+        fallback:
+          name: Message
+          description: Used as is, or when the AI line is missing or fails the check.
+          selector:
+            text: {}
+        ai_prompt:
+          name: AI prompt
+          description: Optional. Instructions for ai_task.generate_data.
+          default: ''
+          selector:
+            text:
+              multiline: true
+        ai_must_contain:
+          name: AI line must contain
+          description: Optional words the AI line must include, or the fallback is used.
+          default: []
+          selector:
+            select:
+              options: []
+              multiple: true
+              custom_value: true
+    actions_group:
+      name: Actions
+      input:
+        alert:
+          name: Alert action
+          description: E.g. a phone notification using `{{ title }}`, `{{ message }}`, `{{ tag }}`.
+          default: []
+          selector:
+            action: {}
+        clear:
+          name: Clear action
+          description: Runs when the problem state ends, e.g. clear the phone notification by `{{ tag }}`.
+          default: []
+          selector:
+            action: {}
+    announce:
+      name: Spoken announcement
+      collapsed: true
+      input:
+        tts_entity:
+          name: TTS engine
+          description: Leave empty to skip the announcement.
+          default: ''
+          selector:
+            entity:
+              domain: tts
+        speaker:
+          name: Speaker
+          default: ''
+          selector:
+            entity:
+              domain: media_player
+        announce_after:
+          name: Speak only after
+          default: '10:00:00'
+          selector:
+            time: {}
+        announce_before:
+          name: Speak only before
+          default: '23:59:00'
+          selector:
+            time: {}
+
+triggers:
+- trigger: state
+  entity_id: !input entity
+  to: !input problem_states
+  for: !input duration
+  id: problem
+- trigger: state
+  entity_id: !input entity
+  from: !input problem_states
+  not_to: [unavailable, unknown]
+  id: cleared
+
+variables:
+  tag: !input tag
+  title: !input title
+  fallback: !input fallback
+  ai_prompt: !input ai_prompt
+  ai_must_contain: !input ai_must_contain
+  problem_states: !input problem_states
+  tts_entity: !input tts_entity
+  speaker: !input speaker
+
+actions:
+- choose:
+  - conditions:
+    - condition: trigger
+      id: cleared
+    - condition: template
+      value_template: '{{ trigger.to_state.state not in problem_states }}'
+      alias: Moved to a healthy state, not between two problem states
+    sequence:
+    - action: persistent_notification.dismiss
+      data:
+        notification_id: '{{ tag }}'
+    - sequence: !input clear
+  - conditions:
+    - condition: trigger
+      id: problem
+    sequence:
+    - if:
+      - condition: template
+        value_template: '{{ ai_prompt != '''' }}'
+      then:
+      - action: ai_task.generate_data
+        data:
+          task_name: '{{ title }}'
+          instructions: '{{ ai_prompt }}'
+        response_variable: generated
+        continue_on_error: true
+    - variables:
+        # The model sometimes rambles or answers the wrong thing; only a short line
+        # that mentions every required word is used.
+        message: >-
+          {%- set t = (generated.data if generated is defined and generated.data else '') | string | trim %}
+          {%- set ok = 20 <= t | length <= 200 and ai_must_contain | map('lower') | reject('in', t | lower) | list | length == 0 %}
+          {{- t if ok else fallback }}
+    - action: persistent_notification.create
+      data:
+        notification_id: '{{ tag }}'
+        title: '{{ title }}'
+        message: '{{ message }}'
+    - sequence: !input alert
+    - if:
+      - condition: template
+        value_template: '{{ tts_entity != '''' and speaker != '''' }}'
+      - condition: time
+        after: !input announce_after
+        before: !input announce_before
+      then:
+      - action: tts.speak
+        target:
+          entity_id: '{{ tts_entity }}'
+        data:
+          cache: true
+          media_player_entity_id: '{{ speaker }}'
+          message: '{{ message }}'
+
+mode: queued
+max: 5
