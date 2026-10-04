@@ -3,7 +3,7 @@ blueprint:
   description: >-
     Alerts while an entity sits in a problem state — dehumidifier bucket full,
     dishwasher salt low, filter dirty — and clears the alert when it leaves it.
-    Pins a persistent notification, runs your alert action, optionally speaks the
+    Pins a persistent notification (re-pinned after an HA restart), runs your alert action, optionally speaks the
     message inside a time window, and can have an AI write the line (sanity-checked,
     with a fallback). Actions get `title`, `message` and `tag`.
   domain: automation
@@ -116,8 +116,12 @@ triggers:
   from: !input problem_states
   not_to: [unavailable, unknown]
   id: cleared
+- trigger: homeassistant
+  event: start
+  id: restart
 
 variables:
+  entity: !input entity
   tag: !input tag
   title: !input title
   fallback: !input fallback
@@ -140,6 +144,20 @@ actions:
       data:
         notification_id: '{{ tag }}'
     - sequence: !input clear
+  - conditions:
+    - condition: trigger
+      id: restart
+    alias: Re-pin after a restart — persistent notifications live only in memory
+    sequence:
+    - wait_template: "{{ states(entity) not in ['unavailable', 'unknown'] }}"
+      timeout: 120
+    - condition: template
+      value_template: '{{ states(entity) in problem_states }}'
+    - action: persistent_notification.create
+      data:
+        notification_id: '{{ tag }}'
+        title: '{{ title }}'
+        message: '{{ fallback }}'
   - conditions:
     - condition: trigger
       id: problem

@@ -42,6 +42,14 @@ blueprint:
           default: {hours: 0, minutes: 15, seconds: 0}
           selector:
             duration: {}
+        cooldown:
+          name: Don't repeat within
+          description: >-
+            After an alert, stay quiet this long. Applies to the whole automation,
+            not per sensor — a second room alerting inside the window is skipped.
+          default: {hours: 5, minutes: 0, seconds: 0}
+          selector:
+            duration: {}
         conditions:
           name: Only if
           description: Optional extra conditions, e.g. a mode switch being off.
@@ -104,6 +112,7 @@ trigger_variables:
   direction: !input direction
   threshold: !input threshold
   overrides: !input overrides
+  cooldown: !input cooldown
 
 triggers:
 - trigger: numeric_state
@@ -117,7 +126,14 @@ triggers:
   above: 0
   for: !input duration
 
-conditions: !input conditions
+conditions:
+- condition: template
+  alias: Outside the cooldown since the last alert
+  value_template: >-
+    {{ as_timestamp(now()) - as_timestamp(this.attributes.last_triggered, 0)
+       >= timedelta(**cooldown).total_seconds() }}
+- condition: and
+  conditions: !input conditions
 
 actions:
 - variables:
