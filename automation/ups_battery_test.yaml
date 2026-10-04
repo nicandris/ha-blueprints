@@ -66,12 +66,12 @@ blueprint:
           default: '13:00:00'
           selector:
             time: {}
-        warn_time:
-          name: Warning time
-          description: Same-day reminder before the test.
-          default: '12:30:00'
+        warn_before:
+          name: Warning before test
+          description: Same-day reminder this long before the test.
+          default: {hours: 0, minutes: 30, seconds: 0}
           selector:
-            time: {}
+            duration: {}
     limits:
       name: Limits
       input:
@@ -110,8 +110,8 @@ triggers:
 - trigger: time
   at: !input test_time
   id: run
-- trigger: time
-  at: !input warn_time
+- trigger: template
+  value_template: '{{ now() >= today_at(test_time) - timedelta(**warn_before) }}'
   id: warn
 - trigger: homeassistant
   event: start
@@ -123,6 +123,10 @@ triggers:
     minutes: !input failsafe_minutes
   id: stuck
 
+trigger_variables:
+  test_time: !input test_time
+  warn_before: !input warn_before
+
 variables:
   plug: !input plug
   online: !input online
@@ -130,7 +134,6 @@ variables:
   load: !input load
   runtime: !input runtime
   weekday: !input weekday
-  test_time: !input test_time
   test_minutes: !input test_minutes
   min_battery: !input min_battery
   abort_battery: !input abort_battery
