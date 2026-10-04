@@ -157,7 +157,7 @@ actions:
       target:
         entity_id: '{{ plug }}'
     - variables:
-        title: UPS battery test — never finished
+        title: ⚠️ UPS battery test — never finished
         message: '{{ plug }} had been off for {{ failsafe_minutes }} min with no test
           running. Mains restored automatically. Check the trace.'
         important: true
@@ -172,7 +172,7 @@ actions:
         | int and t.day <= 7 }}'
     sequence:
     - variables:
-        title: UPS battery test tomorrow
+        title: 🗓️ UPS battery test tomorrow
         message: 'Heads-up: UPS battery test tomorrow at {{ test_time[:5] }}. Mains
           cut for up to {{ test_minutes }} min. Battery {{ states(battery) }}%, needs
           {{ min_battery }}% to run.'
@@ -185,7 +185,7 @@ actions:
       value_template: '{{ now().weekday() == weekday | int and now().day <= 7 }}'
     sequence:
     - variables:
-        title: UPS battery test soon
+        title: ⏳ UPS battery test soon
         message: 'UPS battery test at {{ test_time[:5] }}. Battery {{ states(battery)
           }}%, load {{ states(load) }}%.'
         important: false
@@ -202,7 +202,7 @@ actions:
       value_template: '{{ states(battery) | int(0) < min_battery }}'
     then:
     - variables:
-        title: UPS battery test — skipped
+        title: 🔋 UPS battery test — skipped
         message: 'UPS battery is {{ states(battery) }}%, under {{ min_battery }}%.'
         important: false
     - action: persistent_notification.create
@@ -210,7 +210,7 @@ actions:
     - sequence: !input notify
     - stop: Battery too low to test
   - variables:
-      title: UPS battery test — running
+      title: ▶️ UPS battery test — running
       message: 'Mains cut for up to {{ test_minutes }} min. Battery {{ states(battery)
         }}%, load {{ states(load) }}%, {{ states(runtime) }} min runtime.'
       important: false
@@ -231,7 +231,7 @@ actions:
       target:
         entity_id: '{{ plug }}'
     - variables:
-        title: UPS battery test — ABORTED
+        title: ⚠️ UPS battery test — ABORTED
         message: '{{ plug }} switched off but the UPS never went on battery. Wrong
           plug? Power restored.'
         important: true
@@ -248,7 +248,7 @@ actions:
       entity_id: '{{ plug }}'
   - variables:
       title: >-
-        UPS battery test — {{ 'stopped' if stopped else ('CUT SHORT' if wait.completed
+        {{ '⚠️' if wait.completed and not stopped else '✅' }} UPS battery test — {{ 'stopped' if stopped else ('CUT SHORT' if wait.completed
         else 'passed') }}
       message: >-
         Held {{ ((test_minutes * 60 - (wait.remaining | float(0))) / 60) | round(1)
