@@ -247,20 +247,28 @@ actions:
     timeout: '{{ test_minutes * 60 }}'
   - variables:
       stopped: "{{ is_state(plug, 'on') }}"
+      cut_short: '{{ wait.completed and not stopped }}'
+      held: '{{ ((test_minutes * 60 - (wait.remaining | float(0))) / 60) | round(1) }}'
   - action: switch.turn_on
     target:
       entity_id: '{{ plug }}'
+  # Stay running until the UPS confirms mains, so a plug that fails to switch back
+  # on is reported, and other automations can tell the recovery was this test.
+  - wait_template: "{{ is_state(online, 'on') }}"
+    timeout: 300
   - variables:
+      mains_back: '{{ wait.completed }}'
       title: >-
-        {{ '⚠️' if wait.completed and not stopped else '✅' }} UPS battery test — {{ 'stopped' if stopped else ('CUT SHORT' if wait.completed
-        else 'passed') }}
+        {{ '⚠️' if cut_short or not mains_back else '✅' }} UPS battery test — {{
+        'MAINS NOT BACK' if not mains_back else ('stopped' if stopped else ('CUT SHORT'
+        if cut_short else 'passed')) }}
       message: >-
-        Held {{ ((test_minutes * 60 - (wait.remaining | float(0))) / 60) | round(1)
-        }} min on battery, {{ batt_start }}% → {{ states(battery) }}%{{ '' if not
-        wait.completed else (' — stopped by hand' if stopped else ', cut short at the '
-        ~ abort_battery ~ '% floor') }}. Mains restored. Load {{ states(load) }}%, {{
-        states(runtime) }} min runtime.
-      important: '{{ wait.completed and not stopped }}'
+        Held {{ held }} min on battery, {{ batt_start }}% → {{ states(battery) }}%{{
+        ' — stopped by hand' if stopped else (', cut short at the ' ~ abort_battery ~
+        '% floor' if cut_short else '') }}. {{ 'Mains restored.' if mains_back else
+        'Plug switched on but the UPS still reports no mains after 5 min — check it now.'
+        }} Load {{ states(load) }}%, {{ states(runtime) }} min runtime.
+      important: '{{ cut_short or not mains_back }}'
   - action: persistent_notification.create
     data: {notification_id: '{{ nid }}', title: '{{ title }}', message: '{{ message }}'}
   - sequence: !input notify
