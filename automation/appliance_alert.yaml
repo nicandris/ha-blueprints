@@ -7,6 +7,8 @@ blueprint:
     message inside a time window, and can have an AI write the line (sanity-checked,
     with a fallback). Actions get `title`, `message` and `tag`.
   domain: automation
+  homeassistant:
+    min_version: 2026.10.0
   source_url: https://github.com/nicandris/ha-blueprints/blob/main/automation/appliance_alert.yaml
   input:
     detection:
@@ -90,10 +92,12 @@ blueprint:
               domain: tts
         speaker:
           name: Speaker
+          description: A Music Assistant player. Announces with its chime and announcement volume.
           default: ''
           selector:
             entity:
               domain: media_player
+              integration: music_assistant
         announce_after:
           name: Speak only after
           default: '10:00:00'
@@ -192,13 +196,12 @@ actions:
         after: !input announce_after
         before: !input announce_before
       then:
-      - action: tts.speak
+      - action: music_assistant.play_announcement
         target:
-          entity_id: '{{ tts_entity }}'
+          entity_id: '{{ speaker }}'
         data:
-          cache: true
-          media_player_entity_id: '{{ speaker }}'
           message: '{{ message }}'
+          tts_entity_id: '{{ tts_entity }}'
 
 mode: queued
 max: 5
