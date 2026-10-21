@@ -29,8 +29,8 @@ blueprint:
           name: UPS online
           description: >-
             Either a binary sensor that is `on` while the UPS runs on mains, or a
-            status sensor such as NUT's status data (`OL` = mains, `OB` = battery)
-            or status (`Online` / `On Battery`).
+            status sensor: NUT status data (`OL` = mains, `OB` = battery), NUT
+            status (`Online` / `On Battery`) or apcupsd (`ONLINE` / `ONBATT`).
           selector:
             entity:
               domain: [binary_sensor, sensor]
@@ -47,7 +47,9 @@ blueprint:
               domain: sensor
         runtime:
           name: UPS runtime left
-          description: Seconds (as NUT reports it), minutes or hours, read from the sensor's unit.
+          description: >-
+            Read from the sensor's unit: seconds (as NUT reports it) and hours are
+            converted; minutes or no unit are used as is.
           selector:
             entity:
               domain: sensor
@@ -113,7 +115,8 @@ blueprint:
           name: Failsafe
           description: >-
             Turn the plug back on if it has been off this long with no test running.
-            Must be longer than the test plus the battery wait and a minute.
+            Must be longer than the test plus the battery wait plus 5.5 min (mains-back
+            wait and switch-on retries).
           default: 30
           selector:
             number: {min: 5, max: 240, unit_of_measurement: min}
@@ -236,8 +239,8 @@ actions:
         runtime_now: >-
           {%- set r = states(runtime) %}
           {%- if is_number(r) %}
-          {%- set per_min = {'s': 60, 'min': 1, 'h': 1 / 60, 'd': 1 / 1440}
-              .get(state_attr(runtime, 'unit_of_measurement'), 60) %}
+          {%- set per_min = {'s': 60, 'sec': 60, 'seconds': 60, 'h': 1 / 60, 'd': 1 / 1440}
+              .get(state_attr(runtime, 'unit_of_measurement'), 1) %}
           {{- (r | float / per_min) | round(0) | int }} min
           {%- else %}unknown{% endif %}
     - variables:
@@ -275,7 +278,7 @@ actions:
     - condition: template
       value_template: >-
         {{ abort_battery >= min_battery
-           or failsafe_minutes * 60 <= test_minutes * 60 + battery_wait + 60 }}
+           or failsafe_minutes * 60 <= test_minutes * 60 + battery_wait + 330 }}
     then:
     - variables:
         title: ⚠️ UPS battery test — not run, check the settings
@@ -283,8 +286,8 @@ actions:
           {{ 'Abort battery (' ~ abort_battery ~ '%) must be under the minimum to start ('
              ~ min_battery ~ '%). ' if abort_battery >= min_battery else '' }}{{ 'Failsafe ('
              ~ failsafe_minutes ~ ' min) must be longer than the test (' ~ test_minutes
-             ~ ' min) plus the battery wait (' ~ battery_wait ~ ' s) and a minute.'
-             if failsafe_minutes * 60 <= test_minutes * 60 + battery_wait + 60 else '' }}
+             ~ ' min) plus the battery wait (' ~ battery_wait ~ ' s) plus 330 s.'
+             if failsafe_minutes * 60 <= test_minutes * 60 + battery_wait + 330 else '' }}
         important: true
     - action: persistent_notification.create
       data: {notification_id: '{{ nid }}', title: '{{ title }}', message: '{{ message }}'}
@@ -296,7 +299,8 @@ actions:
       value_template: >-
         {{ not is_state(plug, 'on') or not (is_state(online, 'on')
            if online.startswith('binary_sensor.')
-           else ('OL' in states(online).split() or 'Online' in states(online))) }}
+           else (states(online).split() | select('in', ['OL', 'ONLINE']) | list | count > 0
+              or 'Online' in states(online))) }}
     then:
     - variables:
         title: 🔌 UPS battery test — skipped
@@ -334,7 +338,8 @@ actions:
       entity_id: '{{ plug }}'
   - wait_template: >-
       {{ is_state(online, 'off') if online.startswith('binary_sensor.')
-         else ('OB' in states(online).split() or 'On Battery' in states(online)) }}
+         else (states(online).split() | select('in', ['OB', 'ONBATT']) | list | count > 0
+              or 'On Battery' in states(online)) }}
     timeout: '{{ battery_wait }}'
   - if:
     - condition: template
@@ -367,7 +372,8 @@ actions:
   # on is reported, and other automations can tell the recovery was this test.
   - wait_template: >-
       {{ is_state(online, 'on') if online.startswith('binary_sensor.')
-         else ('OL' in states(online).split() or 'Online' in states(online)) }}
+         else (states(online).split() | select('in', ['OL', 'ONLINE']) | list | count > 0
+              or 'Online' in states(online)) }}
     timeout: 300
   - variables:
       mains_back: '{{ wait.completed }}'
