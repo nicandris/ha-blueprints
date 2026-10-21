@@ -2,17 +2,19 @@ blueprint:
   name: Aqara H2 EU Double rocker (WS-K08E)
   description: >-
     Runs an action per button event of a Zigbee2MQTT Aqara H2 double rocker.
-    Only the top buttons can toggle the relays, and only the bottom buttons send
-    double/hold/release. In `control_relay` mode the `single_*` events still fire
-    alongside the relay toggle; in `decoupled` mode the relay stays put.
+    Only the top buttons can toggle the relays. In `control_relay` mode the
+    `single_*` events still fire alongside the relay toggle; in `decoupled` mode the relay stays put.
     `double_*`, `hold_*` and `release_*` need `Multi click` enabled for that
     button, which adds ~1 s of delay while the switch waits for more presses;
     `release_*` only ever follows a `hold_*`. Switches without a neutral wire
     report events more slowly.
-    Duplicate events (Zigbee retries) within the cooldown are dropped.
+    Zigbee2MQTT also exposes `double_*`, `hold_*` and `release_*` for the top
+    button(s); whether the switch sends them depends on its mode and firmware.
+    Duplicate events (Zigbee retries) within the cooldown are dropped; lower the
+    cooldown if quick repeated presses get lost.
     Cloned from Jonybat's gist https://gist.github.com/Jonybat/729e534537fa8903b1269ef722ca2999,
     modernised and without the helper entities.
-  author: Jonybat
+  author: nicandris (based on Jonybat's gist)
   domain: automation
   homeassistant:
     min_version: 2024.10.0
@@ -28,18 +30,40 @@ blueprint:
     cooldown_seconds:
       name: Cooldown (seconds)
       description: The same event again within this time is treated as a duplicate.
-      default: 1
+      default: 0.5
       selector:
         number:
           min: 0
           max: 10
           step: 0.1
           unit_of_measurement: seconds
+    run_mode:
+      name: Run mode
+      description: >-
+        `parallel` lets each press run on its own. `restart` makes every new press
+        cancel the running action (the old behaviour), e.g. so a release stops a
+        hold loop.
+      default: parallel
+      selector:
+        select:
+          options: [parallel, restart]
     left:
       name: Left button
       input:
         single_left:
           name: Single Left Up
+          default: []
+          selector: { action: {} }
+        double_left:
+          name: Double Left Up
+          default: []
+          selector: { action: {} }
+        hold_left:
+          name: Hold Left Up
+          default: []
+          selector: { action: {} }
+        release_left:
+          name: Release Left Up
           default: []
           selector: { action: {} }
         single_left_down:
@@ -65,6 +89,18 @@ blueprint:
           name: Single Right Up
           default: []
           selector: { action: {} }
+        double_right:
+          name: Double Right Up
+          default: []
+          selector: { action: {} }
+        hold_right:
+          name: Hold Right Up
+          default: []
+          selector: { action: {} }
+        release_right:
+          name: Release Right Up
+          default: []
+          selector: { action: {} }
         single_right_down:
           name: Single Right Down
           default: []
@@ -82,33 +118,43 @@ blueprint:
           default: []
           selector: { action: {} }
 
-mode: restart
+mode: !input run_mode
 max_exceeded: silent
 
 triggers:
   - trigger: state
     entity_id: !input event
     not_from:
-      - unknown
       - unavailable
     not_to:
       - unknown
       - unavailable
 
-actions:
-  # The event entity's state is the event time and its previous state still holds
-  # the previous event, so duplicates are caught without helper entities.
-  - variables:
-      cooldown: !input cooldown_seconds
-      command: "{{ trigger.to_state.attributes.event_type }}"
+# The event entity's state is the event time and its previous state still holds
+# the previous event, so duplicates are caught without helper entities. Checked as
+# a condition so a duplicate never starts (or cancels) a run.
+variables:
+  cooldown: !input cooldown_seconds
+  command: "{{ trigger.to_state.attributes.event_type }}"
+
+conditions:
   - condition: template
     alias: Not a duplicate of the previous event
     value_template: >-
-      {{ command != trigger.from_state.attributes.event_type
-         or as_timestamp(trigger.to_state.state, 0) - as_timestamp(trigger.from_state.state, 0) > cooldown }}
+      {{ trigger.from_state is not none
+         and (command != trigger.from_state.attributes.event_type
+              or as_timestamp(trigger.to_state.state, 0) - as_timestamp(trigger.from_state.state, 0) > cooldown) }}
+
+actions:
   - choose:
       - conditions: "{{ command == 'single_left' }}"
         sequence: !input single_left
+      - conditions: "{{ command == 'double_left' }}"
+        sequence: !input double_left
+      - conditions: "{{ command == 'hold_left' }}"
+        sequence: !input hold_left
+      - conditions: "{{ command == 'release_left' }}"
+        sequence: !input release_left
       - conditions: "{{ command == 'single_left_down' }}"
         sequence: !input single_left_down
       - conditions: "{{ command == 'double_left_down' }}"
@@ -119,6 +165,12 @@ actions:
         sequence: !input release_left_down
       - conditions: "{{ command == 'single_right' }}"
         sequence: !input single_right
+      - conditions: "{{ command == 'double_right' }}"
+        sequence: !input double_right
+      - conditions: "{{ command == 'hold_right' }}"
+        sequence: !input hold_right
+      - conditions: "{{ command == 'release_right' }}"
+        sequence: !input release_right
       - conditions: "{{ command == 'single_right_down' }}"
         sequence: !input single_right_down
       - conditions: "{{ command == 'double_right_down' }}"
