@@ -40,13 +40,14 @@ blueprint:
     run_mode:
       name: Run mode
       description: >-
-        `parallel` lets each press run on its own. `restart` makes every new press
-        cancel the running action (the old behaviour), e.g. so a release stops a
-        hold loop.
-      default: parallel
+        `restart` (default) makes every new press cancel the running action, e.g.
+        so a release stops a hold loop. `parallel` lets each press run on its own,
+        so a press on one rocker no longer cancels the other's action. Duplicates
+        are dropped before either mode applies.
+      default: restart
       selector:
         select:
-          options: [parallel, restart]
+          options: [restart, parallel]
     left:
       name: Left button
       input:
