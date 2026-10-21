@@ -3,9 +3,14 @@ blueprint:
   description: >-
     Alerts while an entity sits in a problem state — dehumidifier bucket full,
     dishwasher salt low, filter dirty — and clears the alert when it leaves it.
-    Pins a persistent notification (re-pinned after an HA restart), runs your alert action, optionally speaks the
-    message inside a time window, and can have an AI write the line (sanity-checked,
-    with a fallback). Actions get `title`, `message` and `tag`.
+    Pins a persistent notification (re-pinned after an HA restart or when the
+    entity comes back in a problem state), runs your alert action, optionally
+    speaks the message inside a time window, and can have an AI write the line
+    (sanity-checked, with a fallback; skipped when no AI Task integration is set
+    up). Actions get `title`, `message` and `tag`. A blip to unavailable or a move
+    between two problem states does not alert again. The clear action also runs
+    when the entity comes back healthy from unavailable, as it can't tell whether
+    an alert was pinned before the outage.
   domain: automation
   homeassistant:
     min_version: 2026.10.0
@@ -105,33 +110,41 @@ blueprint:
             time: {}
         announce_before:
           name: Speak only before
-          default: '23:59:00'
+          description: '`00:00:00` means until midnight.'
+          default: '00:00:00'
           selector:
             time: {}
 
+trigger_variables:
+  entity: !input entity
+  problem_states: !input problem_states
+
 triggers:
-- trigger: state
-  entity_id: !input entity
-  to: !input problem_states
+# Also true while unavailable/unknown, so a blip in the middle of a problem, or a
+# move from one problem state to another, does not fire it again.
+- trigger: template
+  value_template: "{{ states(entity) in problem_states + ['unavailable', 'unknown'] }}"
   for: !input duration
   id: problem
 - trigger: state
   entity_id: !input entity
-  from: !input problem_states
   not_to: [unavailable, unknown]
   id: cleared
 - trigger: homeassistant
   event: start
   id: restart
+- trigger: state
+  entity_id: !input entity
+  from: [unavailable, unknown]
+  to: !input problem_states
+  id: restart
 
 variables:
-  entity: !input entity
   tag: !input tag
   title: !input title
   fallback: !input fallback
   ai_prompt: !input ai_prompt
   ai_must_contain: !input ai_must_contain
-  problem_states: !input problem_states
   tts_entity: !input tts_entity
   speaker: !input speaker
 
@@ -141,8 +154,10 @@ actions:
     - condition: trigger
       id: cleared
     - condition: template
-      value_template: '{{ trigger.to_state.state not in problem_states }}'
-      alias: Moved to a healthy state, not between two problem states
+      value_template: >-
+        {{ trigger.from_state is not none and trigger.to_state.state not in problem_states
+           and trigger.from_state.state in problem_states + ['unavailable', 'unknown'] }}
+      alias: Moved to a healthy state from a problem (or unavailable) state
     sequence:
     - action: persistent_notification.dismiss
       data:
@@ -151,7 +166,7 @@ actions:
   - conditions:
     - condition: trigger
       id: restart
-    alias: Re-pin after a restart — persistent notifications live only in memory
+    alias: Re-pin after a restart or outage — persistent notifications live only in memory
     sequence:
     - wait_template: "{{ states(entity) not in ['unavailable', 'unknown'] }}"
       timeout: 120
@@ -165,10 +180,14 @@ actions:
   - conditions:
     - condition: trigger
       id: problem
+    - condition: template
+      value_template: '{{ states(entity) in problem_states }}'
+      alias: In a problem state, not just unavailable
     sequence:
     - if:
       - condition: template
-        value_template: '{{ ai_prompt != '''' }}'
+        value_template: "{{ ai_prompt != '' and states.ai_task | list | count > 0 }}"
+        alias: AI prompt set and an AI Task entity exists (else the action is missing)
       then:
       - action: ai_task.generate_data
         data:
@@ -181,7 +200,8 @@ actions:
         # that mentions every required word is used.
         message: >-
           {%- set t = (generated.data if generated is defined and generated.data else '') | string | trim %}
-          {%- set ok = 20 <= t | length <= 200 and ai_must_contain | map('lower') | reject('in', t | lower) | list | length == 0 %}
+          {%- set missing = ai_must_contain | map('lower') | reject('in', t | lower) | list %}
+          {%- set ok = 20 <= t | length <= 200 and missing | length == 0 %}
           {{- t if ok else fallback }}
     - action: persistent_notification.create
       data:
