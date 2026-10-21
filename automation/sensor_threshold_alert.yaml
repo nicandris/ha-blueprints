@@ -7,12 +7,8 @@ blueprint:
     action, then optionally speaks it on a speaker inside a time window, with an
     optional AI-written line (skipped when no AI Task integration is set up).
     Actions get `sensor`, `value`, `threshold`, `room` (the sensor's area name)
-    and `unit`. Every 15 minutes, outside the cooldown and when "Only if" holds,
-    sensors still past their threshold alert too, so an alert skipped by the
-    cooldown, the conditions or a restart is sent later, and an ongoing problem
-    repeats once per cooldown. That check can't see how long a sensor has been
-    past its threshold, so one that crossed just before it may alert before
-    "For at least" is up.
+    and `unit`. Optionally re-alerts sensors still past their threshold (see
+    "Re-alert while still past the threshold").
   domain: automation
   homeassistant:
     min_version: 2026.10.0
@@ -60,6 +56,18 @@ blueprint:
           default: {hours: 5, minutes: 0, seconds: 0}
           selector:
             duration: {}
+        recheck_while_over:
+          name: Re-alert while still past the threshold
+          description: >-
+            Off: alert only when a sensor crosses its threshold (as before). On:
+            every 15 minutes, outside the cooldown and when "Only if" holds, any
+            sensor still past its threshold alerts, so an alert skipped by the
+            cooldown, the conditions or a restart is sent later and an ongoing
+            problem repeats once per cooldown. This check ignores "For at least",
+            so a sensor that crossed just before it can alert early.
+          default: false
+          selector:
+            boolean: {}
         conditions:
           name: Only if
           description: Optional extra conditions, e.g. a mode switch being off.
@@ -145,6 +153,7 @@ triggers:
 - trigger: time_pattern
   id: recheck
   minutes: /15
+  enabled: !input recheck_while_over
 
 variables:
   sensors: !input sensors
