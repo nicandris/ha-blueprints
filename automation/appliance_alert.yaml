@@ -8,9 +8,10 @@ blueprint:
     speaks the message inside a time window, and can have an AI write the line
     (sanity-checked, with a fallback; skipped when no AI Task integration is set
     up). Actions get `title`, `message` and `tag`. A blip to unavailable or a move
-    between two problem states does not alert again. The clear action also runs
-    when the entity comes back healthy from unavailable, as it can't tell whether
-    an alert was pinned before the outage.
+    between two problem states does not alert again; a problem that starts while
+    the entity is unavailable alerts once it reports in. The clear action runs
+    when the entity leaves a problem state for a healthy one; coming back healthy
+    from unavailable only dismisses the persistent notification.
   domain: automation
   homeassistant:
     min_version: 2026.10.0
@@ -118,12 +119,13 @@ blueprint:
 trigger_variables:
   entity: !input entity
   problem_states: !input problem_states
+  ps: '{{ [problem_states] if problem_states is string else problem_states | list }}'
 
 triggers:
 # Also true while unavailable/unknown, so a blip in the middle of a problem, or a
 # move from one problem state to another, does not fire it again.
 - trigger: template
-  value_template: "{{ states(entity) in problem_states + ['unavailable', 'unknown'] }}"
+  value_template: "{{ states(entity) in ps + ['unavailable', 'unknown'] }}"
   for: !input duration
   id: problem
 - trigger: state
@@ -155,23 +157,31 @@ actions:
       id: cleared
     - condition: template
       value_template: >-
-        {{ trigger.from_state is not none and trigger.to_state.state not in problem_states
-           and trigger.from_state.state in problem_states + ['unavailable', 'unknown'] }}
+        {{ trigger.from_state is not none and trigger.to_state.state not in ps
+           and trigger.from_state.state in ps + ['unavailable', 'unknown'] }}
       alias: Moved to a healthy state from a problem (or unavailable) state
     sequence:
     - action: persistent_notification.dismiss
       data:
         notification_id: '{{ tag }}'
-    - sequence: !input clear
+    - if:
+      - condition: template
+        value_template: '{{ trigger.from_state.state in ps }}'
+        alias: Left a problem state (not just unavailable)
+      then:
+      - sequence: !input clear
   - conditions:
     - condition: trigger
       id: restart
+    - condition: template
+      value_template: "{{ trigger.platform != 'state' or (this.attributes.current | default(0)) == 0 }}"
+      alias: Not while an alert run is waiting for the entity
     alias: Re-pin after a restart or outage — persistent notifications live only in memory
     sequence:
     - wait_template: "{{ states(entity) not in ['unavailable', 'unknown'] }}"
       timeout: 120
     - condition: template
-      value_template: '{{ states(entity) in problem_states }}'
+      value_template: '{{ states(entity) in ps }}'
     - action: persistent_notification.create
       data:
         notification_id: '{{ tag }}'
@@ -180,10 +190,15 @@ actions:
   - conditions:
     - condition: trigger
       id: problem
-    - condition: template
-      value_template: '{{ states(entity) in problem_states }}'
-      alias: In a problem state, not just unavailable
     sequence:
+    # Fired while unavailable means the problem began from a healthy state during
+    # an outage: wait for the entity to report in, then alert if it's a problem.
+    - wait_template: "{{ states(entity) not in ['unavailable', 'unknown'] }}"
+      timeout: '24:00:00'
+      continue_on_timeout: false
+    - condition: template
+      value_template: '{{ states(entity) in ps }}'
+      alias: In a problem state, not just unavailable
     - if:
       - condition: template
         value_template: "{{ ai_prompt != '' and states.ai_task | list | count > 0 }}"
