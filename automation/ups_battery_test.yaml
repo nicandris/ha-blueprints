@@ -281,7 +281,7 @@ actions:
           {{- (r | float / per_min) | round(0) | int }} min
           {%- else %}unknown{% endif %}
         down_now: >-
-          {{ (' Downstream battery ' ~ downstream_battery | map('states') | join('%, ') ~ '%.')
+          {{ (' Downstream battery ' ~ expand(downstream_battery) | map(attribute='state') | join('%, ') ~ '%.')
              if series and downstream_battery | count > 0 else '' }}
     - variables:
         title: 🗓️ UPS battery test tomorrow
@@ -358,7 +358,7 @@ actions:
         title: 🔌 UPS battery test — skipped
         message: >-
           The UPS is not on mains right now ({{ plug }} {{ states(plug) }}, {{ online }}
-          {{ states(online) }}{{ ', downstream ' ~ downstream | map('states') | join(', ')
+          {{ states(online) }}{{ ', downstream ' ~ expand(downstream) | map(attribute='state') | join(', ')
           if series else '' }}), so the test would drain a battery that is already in use.
         important: true
     - action: persistent_notification.create
