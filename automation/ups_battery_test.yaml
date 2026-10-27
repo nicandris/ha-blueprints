@@ -10,7 +10,9 @@ blueprint:
     restores mains on HA start, on automation reload (which kills a running test)
     and if the plug is left off too long, retrying the switch-on. Every outcome
     lands as a persistent notification and is passed to the optional notify
-    action as `title`, `message` and `important`.
+    action as `title`, `message` and `important`. With "UPSes in series" ticked,
+    the UPSes behind this one must stay on mains through the test: one dropping
+    to battery cuts it short (it is rejecting this UPS's output and draining too).
   domain: automation
   homeassistant:
     min_version: 2024.10.0
@@ -120,6 +122,38 @@ blueprint:
           default: 30
           selector:
             number: {min: 5, max: 240, unit_of_measurement: min}
+    chain:
+      name: UPSes in series
+      description: >-
+        For a chain like plug → this UPS → another UPS → load. The entities above
+        are the first UPS, the one the plug feeds.
+      collapsed: true
+      input:
+        series:
+          name: UPSes in series
+          description: Also watch the UPSes behind this one.
+          default: false
+          selector:
+            boolean: {}
+        downstream:
+          name: Downstream UPS online
+          description: >-
+            One per UPS behind this one, same kinds of entity as "UPS online". They
+            should stay on mains the whole test.
+          default: []
+          selector:
+            entity:
+              domain: [binary_sensor, sensor]
+              multiple: true
+        downstream_battery:
+          name: Downstream UPS battery (%)
+          description: Reported in the messages only.
+          default: []
+          selector:
+            entity:
+              domain: sensor
+              device_class: battery
+              multiple: true
     notify:
       name: Notify action
       description: >-
@@ -172,6 +206,9 @@ variables:
   abort_battery: !input abort_battery
   battery_wait: !input battery_wait
   failsafe_minutes: !input failsafe_minutes
+  series: !input series
+  downstream: !input downstream
+  downstream_battery: !input downstream_battery
   nid: "{{ this.entity_id | replace('.', '_') }}"
 
 actions:
@@ -243,6 +280,9 @@ actions:
               .get(state_attr(runtime, 'unit_of_measurement'), 1) %}
           {{- (r | float / per_min) | round(0) | int }} min
           {%- else %}unknown{% endif %}
+        down_now: >-
+          {{ (' Downstream battery ' ~ expand(downstream_battery) | map(attribute='state') | join('%, ') ~ '%.')
+             if series and downstream_battery | count > 0 else '' }}
     - variables:
         title: 🗓️ UPS battery test tomorrow
         message: 'Heads-up: UPS battery test tomorrow at {{ test_time[:5] }}. Mains
@@ -294,19 +334,32 @@ actions:
     - sequence: !input notify
     - stop: Invalid settings
   - *readings
+  - variables:
+      down_mains: >-
+        {%- set ns = namespace(n=0) %}
+        {%- for e in downstream %}
+        {%- if (is_state(e, 'on') if e.startswith('binary_sensor.')
+           else (states(e).split() | select('in', ['OL', 'ONLINE']) | list | count > 0 or
+           'Online' in states(e))) %}
+        {%- set ns.n = ns.n + 1 %}
+        {%- endif %}
+        {%- endfor %}
+        {{- ns.n == downstream | count }}
   - if:
     - condition: template
       value_template: >-
         {{ not is_state(plug, 'on') or not (is_state(online, 'on')
            if online.startswith('binary_sensor.')
            else (states(online).split() | select('in', ['OL', 'ONLINE']) | list | count > 0
-              or 'Online' in states(online))) }}
+              or 'Online' in states(online)))
+           or (series and not down_mains) }}
     then:
     - variables:
         title: 🔌 UPS battery test — skipped
         message: >-
           The UPS is not on mains right now ({{ plug }} {{ states(plug) }}, {{ online }}
-          {{ states(online) }}), so the test would drain a battery that is already in use.
+          {{ states(online) }}{{ ', downstream ' ~ expand(downstream) | map(attribute='state') | join(', ')
+          if series else '' }}), so the test would drain a battery that is already in use.
         important: true
     - action: persistent_notification.create
       data: {notification_id: '{{ nid }}', title: '{{ title }}', message: '{{ message }}'}
@@ -327,7 +380,7 @@ actions:
   - variables:
       title: ▶️ UPS battery test — running
       message: 'Mains cut for up to {{ test_minutes }} min. Battery {{ batt_now }},
-        load {{ load_now }}, {{ runtime_now }} runtime.'
+        load {{ load_now }}, {{ runtime_now }} runtime.{{ down_now }}'
       important: false
       batt_start: '{{ states(battery) | int(0) }}'
   - action: persistent_notification.create
@@ -359,21 +412,47 @@ actions:
     - stop: Plug does not feed the UPS mains
   # A lost battery reading aborts too: assuming a value would disable the floor.
   - wait_template: >-
-      {{ not is_number(states(battery)) or states(battery) | float < abort_battery
-         or is_state(plug, 'on') }}
+      {%- set ns = namespace(n=0) %}
+      {%- for e in downstream %}
+      {%- if (is_state(e, 'off') if e.startswith('binary_sensor.')
+         else (states(e).split() | select('in', ['OB', 'ONBATT']) | list | count > 0 or
+         'On Battery' in states(e))) %}
+      {%- set ns.n = ns.n + 1 %}
+      {%- endif %}
+      {%- endfor %}
+      {{- not is_number(states(battery)) or states(battery) | float < abort_battery
+         or is_state(plug, 'on') or (series and ns.n > 0) }}
     timeout: '{{ test_minutes * 60 }}'
   - variables:
       stopped: "{{ is_state(plug, 'on') }}"
       lost: '{{ not is_number(states(battery)) }}'
+      down_dropped: >-
+        {%- set ns = namespace(n=0) %}
+        {%- for e in downstream %}
+        {%- if (is_state(e, 'off') if e.startswith('binary_sensor.')
+           else (states(e).split() | select('in', ['OB', 'ONBATT']) | list | count > 0 or
+           'On Battery' in states(e))) %}
+        {%- set ns.n = ns.n + 1 %}
+        {%- endif %}
+        {%- endfor %}
+        {{- series and ns.n > 0 }}
       cut_short: '{{ wait.completed and not stopped }}'
       held: '{{ ((test_minutes * 60 - (wait.remaining | float(0))) / 60) | round(1) }}'
   - *restore_mains
   # Stay running until the UPS confirms mains, so a plug that fails to switch back
   # on is reported, and other automations can tell the recovery was this test.
   - wait_template: >-
-      {{ is_state(online, 'on') if online.startswith('binary_sensor.')
+      {%- set ns = namespace(n=0) %}
+      {%- for e in downstream %}
+      {%- if (is_state(e, 'on') if e.startswith('binary_sensor.')
+         else (states(e).split() | select('in', ['OL', 'ONLINE']) | list | count > 0 or
+         'Online' in states(e))) %}
+      {%- set ns.n = ns.n + 1 %}
+      {%- endif %}
+      {%- endfor %}
+      {{- (is_state(online, 'on') if online.startswith('binary_sensor.')
          else (states(online).split() | select('in', ['OL', 'ONLINE']) | list | count > 0
-              or 'Online' in states(online)) }}
+              or 'Online' in states(online))) and (not series or ns.n == downstream | count) }}
     timeout: 300
   - variables:
       mains_back: '{{ wait.completed }}'
@@ -385,10 +464,11 @@ actions:
         if cut_short else 'passed')) }}
       message: >-
         Held {{ held }} min on battery, {{ batt_start }}% → {{ batt_now }}{{
-        ' — stopped by hand' if stopped else ((', cut short: battery reading lost' if lost
+        ' — stopped by hand' if stopped else ((', cut short: a downstream UPS went on battery'
+        if down_dropped else ', cut short: battery reading lost' if lost
         else ', cut short at the ' ~ abort_battery ~ '% floor') if cut_short else '') }}. {{
         'Mains restored.' if mains_back else 'Plug switched on but the UPS still reports
-        no mains after 5 min — check it now.' }} Load {{ load_now }}, {{ runtime_now }} runtime.
+        no mains after 5 min — check it now.' }} Load {{ load_now }}, {{ runtime_now }} runtime.{{ down_now }}
       important: '{{ cut_short or not mains_back }}'
   - action: persistent_notification.create
     data: {notification_id: '{{ nid }}', title: '{{ title }}', message: '{{ message }}'}
